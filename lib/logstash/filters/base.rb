@@ -79,20 +79,13 @@ class LogStash::Filters::Base < LogStash::Plugin
   end # def register
 
   public
-  def prepare_metrics
-    @filter_metric = @logger.metrics.timer(self)
-  end # def prepare_metrics
-
-  public
   def filter(event)
     raise "#{self.class}#filter must be overidden"
   end # def filter
 
   public
   def execute(event, &block)
-    @filter_metric.time do
-      filter(event, &block)
-    end
+    filter(event, &block)
   end # def execute
 
   public
@@ -106,8 +99,12 @@ class LogStash::Filters::Base < LogStash::Plugin
   def filter_matched(event)
     (@add_field or {}).each do |field, value|
       event[field] ||= []
-      event[field] = [event[field]] if !event[field].is_a?(Array)
-      event[field] << event.sprintf(value)
+      if value.is_a?(Array)
+        event[field] += value
+      else
+        event[field] = [event[field]] if !event[field].is_a?(Array)
+        event[field] << event.sprintf(value)
+      end
       @logger.debug("filters/#{self.class.name}: adding value to field",
                     :field => field, :value => value)
     end
@@ -131,21 +128,21 @@ class LogStash::Filters::Base < LogStash::Plugin
   def filter?(event)
     if !@type.empty?
       if event.type != @type
-        @logger.debug(["Dropping event because type doesn't match #{@type}", event])
+        @logger.debug(["Skipping event because type doesn't match #{@type}", event])
         return false
       end
     end
 
     if !@tags.empty?
       if (event.tags & @tags).size != @tags.size
-        @logger.debug(["Dropping event because tags don't match #{@tags.inspect}", event])
+        @logger.debug(["Skipping event because tags don't match #{@tags.inspect}", event])
         return false
       end
     end
 
     if !@exclude_tags.empty?
       if (diff_tags = (event.tags & @exclude_tags)).size != 0
-        @logger.debug(["Dropping event because tags contains excluded tags: #{diff_tags.inspect}", event])
+        @logger.debug(["Skipping event because tags contains excluded tags: #{diff_tags.inspect}", event])
         return false
       end
     end

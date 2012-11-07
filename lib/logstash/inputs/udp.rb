@@ -48,9 +48,8 @@ class LogStash::Inputs::Udp < LogStash::Inputs::Base
   def udp_listener(output_queue)
     @logger.info("Starting UDP listener", :address => "#{@host}:#{@port}")
 
-    if @udp 
-      @udp.close_read
-      @udp.close_write
+    if @udp && ! @udp.closed?
+      @udp.close
     end
 
     @udp = UDPSocket.new(Socket::AF_INET)

@@ -1,7 +1,7 @@
 require "logstash/inputs/base"
 require "logstash/namespace"
 require "thread"
-require "cinch"
+
 # Read events from an IRC Server.
 #
 class LogStash::Inputs::Irc < LogStash::Inputs::Base
@@ -37,6 +37,7 @@ class LogStash::Inputs::Irc < LogStash::Inputs::Base
 
   public
   def register
+    require "cinch"
     @irc_queue = Queue.new
     @logger.info("Connecting to irc server", :host => @host, :port => @port, :nick => @nick, :channels => @channels)
 
@@ -66,7 +67,7 @@ class LogStash::Inputs::Irc < LogStash::Inputs::Base
       msg = @irc_queue.pop
       event = self.to_event(msg.message, "irc://#{@host}:#{@port}/#{msg.channel}")
       event["channel"] = msg.channel
-      event["user"] = msg.user.user
+      event["nick"] = msg.user.nick
       output_queue << event
     end
   end # def run

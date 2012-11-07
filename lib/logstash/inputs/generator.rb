@@ -9,7 +9,7 @@ require "socket" # for Socket.gethostname
 # An event is generated first
 class LogStash::Inputs::Generator < LogStash::Inputs::Threadable
   config_name "generator"
-  plugin_status "experimental"
+  plugin_status "beta"
 
   # The message string to use in the event.
   #
@@ -19,16 +19,44 @@ class LogStash::Inputs::Generator < LogStash::Inputs::Threadable
   # Otherwise, this value will be used verbatim as the event message.
   config :message, :validate => :string, :default => "Hello world!"
 
+  # The lines to emit, in order. This option cannot be used with the 'message'
+  # setting.
+  #
+  # Example:
+  #
+  #     input {
+  #       generator {
+  #         lines => [
+  #           "line 1",
+  #           "line 2",
+  #           "line 3"
+  #         ]
+  #       }
+  #
+  #       # Emit all lines 3 times.
+  #       count => 3
+  #     }
+  #
+  # The above will emit "line 1" then "line 2" then "line", then "line 1", etc... 
+  config :lines, :validate => :array
+
+  # Set how many messages should be generated.
+  #
+  # The default, 0, means generate an unlimited number of events.
+  config :count, :validate => :integer, :default => 0
+
   public
   def register
     @host = Socket.gethostname
-    @metric_generate = @logger.metrics.timer(self, "event-generation")
-    @metric_queue_write = @logger.metrics.timer(self, "queue-write-time")
+
+    if @count.is_a?(Array)
+      @count = @count.first
+    end
   end # def register
 
   def run(queue)
     number = 0
-    source = "stdin://#{@host}/"
+    source = "generator://#{@host}/"
 
     if @message == "stdin"
       @logger.info("Generator plugin reading a line from stdin")
@@ -36,16 +64,19 @@ class LogStash::Inputs::Generator < LogStash::Inputs::Threadable
       @logger.debug("Generator line read complete", :message => @message)
     end
 
-    while !finished?
-      @metric_generate.time do
-        event = to_event(@message, source)
-        event["sequence"] = number
-        # Time how long each queue push takes.
-        number += 1
-        @metric_queue_write.time do
+    while !finished? && (@count <= 0 || number < @count)
+      if @lines
+        @lines.each do |line|
+          event = to_event(line, source)
+          event["sequence"] = number
           queue << event
         end
+      else
+        event = to_event(@message, source)
+        event["sequence"] = number
+        queue << event
       end
+      number += 1
     end # loop
   end # def run
 

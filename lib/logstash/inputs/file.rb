@@ -49,6 +49,16 @@ class LogStash::Inputs::File < LogStash::Inputs::Base
   # monitored log files.
   config :sincedb_write_interval, :validate => :number, :default => 15
 
+  # Choose where logstash starts initially reading files - at the beginning or
+  # at the end. The default behavior treats files like live streams and thus
+  # starts at the end. If you have old data you want to import, set this
+  # to 'beginning'
+  #
+  # This option only modifieds "first contact" situations where a file is new
+  # and not seen before. If a file has already been seen before, this option
+  # has no effect.
+  config :start_position, :validate => [ "beginning", "end"], :default => "end"
+
   public
   def initialize(params)
     super
@@ -63,26 +73,61 @@ class LogStash::Inputs::File < LogStash::Inputs::Base
   public
   def register
     require "filewatch/tail"
+    require "digest/md5"
     LogStash::Util::set_thread_name("input|file|#{path.join(":")}")
     @logger.info("Registering file input", :path => @path)
-  end # def register
 
-  public
-  def run(queue)
-    config = {
+    @tail_config = {
       :exclude => @exclude,
       :stat_interval => @stat_interval,
       :discover_interval => @discover_interval,
       :sincedb_write_interval => @sincedb_write_interval,
       :logger => @logger,
     }
-    config[:sincedb_path] = @sincedb_path if @sincedb_path
-    tail = FileWatch::Tail.new(config)
-    tail.logger = @logger
-    @path.each { |path| tail.tail(path) }
+
+    if @sincedb_path.nil?
+      if ENV["HOME"].nil?
+        @logger.error("No HOME environment variable set, I don't know where " \
+                      "to keep track of the files I'm watching. Either set " \
+                      "HOME in your environment, or set sincedb_path in " \
+                      "in your logstash config for the file input with " \
+                      "path '#{@path.inspect}'")
+        raise # TODO(sissel): HOW DO I FAIL PROPERLY YO
+      end
+
+      # Join by ',' to make it easy for folks to know their own sincedb
+      # generated path (vs, say, inspecting the @path array)
+      @sincedb_path = File.join(ENV["HOME"], ".sincedb_" + Digest::MD5.hexdigest(@path.join(",")))
+
+      # Migrate any old .sincedb to the new file (this is for version <=1.1.1 compatibility)
+      old_sincedb = File.join(ENV["HOME"], ".sincedb")
+      if File.exists?(old_sincedb)
+        @logger.info("Renaming old ~/.sincedb to new one", :old => old_sincedb,
+                     :new => @sincedb_path)
+        File.rename(old_sincedb, @sincedb_path)
+      end
+
+      @logger.info("No sincedb_path set, generating one based on the file path",
+                   :sincedb_path => @sincedb_path, :path => @path)
+    end
+
+    @tail_config[:sincedb_path] = @sincedb_path
+
+    if @start_position == "beginning"
+      @tail_config[:start_new_files_at] = :beginning
+    end
+  end # def register
+
+  public
+  def run(queue)
+    @tail = FileWatch::Tail.new(@tail_config)
+    @tail.logger = @logger
+    @path.each { |path| @tail.tail(path) }
     hostname = Socket.gethostname
 
-    tail.subscribe do |path, line|
+    @tail.subscribe do |path, line|
+      path = path.force_encoding("UTF-8")
+      line = line.force_encoding("UTF-8")
       source = Addressable::URI.new(:scheme => "file", :host => hostname, :path => path).to_s
       @logger.debug("Received line", :path => path, :line => line)
       e = to_event(line, source)
@@ -90,5 +135,11 @@ class LogStash::Inputs::File < LogStash::Inputs::Base
         queue << e
       end
     end
+    finished
   end # def run
+
+  public
+  def teardown
+    @tail.quit
+  end # def teardown
 end # class LogStash::Inputs::File

@@ -1,21 +1,16 @@
 require "logstash/namespace"
 require "logstash/outputs/base"
 
-# This output lets you store logs in elasticsearch and is the most recommended
-# output for logstash. If you plan on using the logstash web interface, you'll
-# need to use this output.
+# This output lets you store logs in elasticsearch.
 #
-#   *NOTE*: You must use the same version of elasticsearch server that logstash
-#   uses for its client. Currently we use elasticsearch 0.18.7
+# This output differs from the 'elasticsearch' output by using the HTTP
+# interface for indexing data with elasticsearch.
 #
 # You can learn more about elasticsearch at <http://elasticsearch.org>
 class LogStash::Outputs::ElasticSearchHTTP < LogStash::Outputs::Base
 
   config_name "elasticsearch_http"
-  plugin_status "experimental"
-
-  # ElasticSearch server name. This is optional if your server is discoverable.
-  config :host, :validate => :string
+  plugin_status "beta"
 
   # The index to write events to. This can be dynamic using the %{foo} syntax.
   # The default value will partition your indices by day so you can more easily
@@ -26,10 +21,6 @@ class LogStash::Outputs::ElasticSearchHTTP < LogStash::Outputs::Base
   # similar events to the same 'type'. String expansion '%{foo}' works here.
   config :index_type, :validate => :string, :default => "%{@type}"
 
-  # The name of your cluster if you set it on the ElasticSearch side. Useful
-  # for discovery.
-  config :cluster, :validate => :string
-
   # The name/address of the host to use for ElasticSearch unicast discovery
   # This is only required if the normal multicast/cluster discovery stuff won't
   # work in your environment.
@@ -38,17 +29,6 @@ class LogStash::Outputs::ElasticSearchHTTP < LogStash::Outputs::Base
   # The port for ElasticSearch transport to use. This is *not* the ElasticSearch
   # REST API port (normally 9200).
   config :port, :validate => :number, :default => 9200
-
-  # Run the elasticsearch server embedded in this process.
-  # This option is useful if you want to run a single logstash process that
-  # handles log processing and indexing; it saves you from needing to run
-  # a separate elasticsearch process.
-  config :embedded, :validate => :boolean, :default => false
-
-  # If you are running the embedded elasticsearch server, you can set the http
-  # port it listens on here; it is not common to need this setting changed from
-  # default.
-  config :embedded_http_port, :validate => :string, :default => "9200-9300"
 
   # Set the number of events to queue up before writing to elasticsearch.
   #
@@ -61,60 +41,11 @@ class LogStash::Outputs::ElasticSearchHTTP < LogStash::Outputs::Base
 
   public
   def register
-    # TODO(sissel): find a better way of declaring where the elasticsearch
-    # libraries are
-    # TODO(sissel): can skip this step if we're running from a jar.
-    jarpath = File.join(File.dirname(__FILE__), "../../../vendor/**/*.jar")
-    Dir[jarpath].each do |jar|
-        require jar
-    end
-
-    # setup log4j properties for elasticsearch
-    @logger.setup_log4j
-
-    if @embedded
-      # Check for settings that are incompatible with @embedded
-      %w(host).each do |name|
-        if instance_variable_get("@#{name}")
-          @logger.error("outputs/elasticsearch: You cannot specify " \
-                        "'embedded => true' and also set '#{name}'")
-          raise "Invalid configuration detected. Please fix."
-        end
-        # Force localhost for embedded elasticsearch
-        @host = "localhost"
-      end
-
-      # Start elasticsearch local.
-      start_local_elasticsearch
-    end
-
     require "ftw" # gem ftw
     @agent = FTW::Agent.new
-
-    # TODO(sissel): Implement this model in FTW:
-    #    reader, writer = IO.pipe
-    #    request = agent.post(url, :body => reader)
-    #    agent.execute(request)
-    #    writer.write(body...)
-    #    writer.write(body...)
-    #    writer.write(body...)
-    #    writer.close
-    #    TODO(sissel): How to get the response?
     @queue = []
+
   end # def register
-
-  protected
-  def start_local_elasticsearch
-    @logger.info("Starting embedded ElasticSearch local node.")
-    builder = org.elasticsearch.node.NodeBuilder.nodeBuilder
-    # Disable 'local only' - LOGSTASH-277
-    #builder.local(true)
-    builder.settings.put("cluster.name", @cluster) if !@cluster.nil?
-    builder.settings.put("http.port", @embedded_http_port)
-
-    @embedded_elasticsearch = builder.node
-    @embedded_elasticsearch.start
-  end # def start_local_elasticsearch
 
   public
   def receive(event)
@@ -134,15 +65,20 @@ class LogStash::Outputs::ElasticSearchHTTP < LogStash::Outputs::Base
   end # def receive
 
   def receive_single(event, index, type)
-    response = @agent.post!("http://#{@host}:#{@port}/#{index}/#{type}",
-                            :body => event.to_json)
-    # We must read the body to free up this connection for reuse.
-    body = "";
-    response.read_body { |chunk| body += chunk }
+    success = false
+    while !success
+      response = @agent.post!("http://#{@host}:#{@port}/#{index}/#{type}",
+                              :body => event.to_json)
+      # We must read the body to free up this connection for reuse.
+      body = "";
+      response.read_body { |chunk| body += chunk }
 
-    if response.status != 201
-      @logger.error("Error writing to elasticsearch",
-                    :response => response, :response_body => body)
+      if response.status != 201
+        @logger.error("Error writing to elasticsearch",
+                      :response => response, :response_body => body)
+      else
+        success = true
+      end
     end
   end # def receive_single
 
@@ -151,21 +87,79 @@ class LogStash::Outputs::ElasticSearchHTTP < LogStash::Outputs::Base
       { "index" => { "_index" => index, "_type" => type } }.to_json,
       event.to_json
     ].join("\n")
-    
-    if @queue.size > @flush_size
-      response = @agent.post!("http://#{@host}:#{@port}/_bulk",
-                              :body => @queue.join("\n"))
-      @queue.clear
 
-      # We must read the body to free up this connection for reuse.
-      body = "";
-      response.read_body { |chunk| body += chunk }
-
-      #if response.status != 201
-      if response.status != 200
-        @logger.error("Error writing (bulk) to elasticsearch",
-                      :response => response, :response_body => body)
-      end
-    end
+    # Keep trying to flush while the queue is full.
+    # This will cause retries in flushing if the flush fails.
+    flush while @queue.size >= @flush_size
   end # def receive_bulk
-end # class LogStash::Outputs::Elasticsearch
+
+  def flush
+    puts "Flushing #{@queue.count} events"
+    # If we don't tack a trailing newline at the end, elasticsearch
+    # doesn't seem to process the last event in this bulk index call.
+    response = @agent.post!("http://#{@host}:#{@port}/_bulk",
+                            :body => @queue.join("\n") + "\n")
+
+    # Consume the body for error checking
+    # This will also free up the connection for reuse.
+    body = ""
+    response.read_body { |chunk| body += chunk }
+
+    if response.status != 200
+      @logger.error("Error writing (bulk) to elasticsearch",
+                    :response => response, :response_body => body,
+                    :request_body => @queue.join("\n"))
+      return
+    end
+
+    # Clear the queue on success only.
+    @queue.clear
+  end # def flush
+
+  def teardown
+    flush while @queue.size > 0
+  end # def teardown
+
+  # THIS IS NOT USED YET. SEE LOGSTASH-592
+  def setup_index_template
+    template_name = "logstash-template"
+    template_wildcard = @index.gsub(/%{[^}+]}/, "*")
+    template_config = {
+      "template" => template_wildcard,
+      "settings" => {
+        "number_of_shards" => 5,
+        "index.compress.stored" => true,
+        "index.query.default_field" => "@message"
+      },
+      "mappings" => {
+        "_default_" => {
+          "_all" => { "enabled" => false } 
+        }
+      }
+    } # template_config
+
+    @logger.info("Setting up index template", :name => template_name,
+                 :config => template_config)
+    begin
+      success = false
+      while !success
+        response = @agent.put!("http://#{@host}:#{@port}/_template/#{template_name}",
+                               :body => template_config.to_json)
+        if response.error?
+          body = ""
+          response.read_body { |c| body << c }
+          @logger.warn("Failure setting up elasticsearch index template, will retry...",
+                       :status => response.status, :response => body)
+          sleep(1)
+        else
+          success = true
+        end
+      end
+    rescue => e
+      @logger.warn("Failure setting up elasticsearch index template, will retry...",
+                   :exception => e)
+      sleep(1)
+      retry
+    end
+  end # def setup_index_template
+end # class LogStash::Outputs::ElasticSearchHTTP

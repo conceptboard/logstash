@@ -5,7 +5,7 @@ require "logstash/outputs/base"
 # output for logstash. If you plan on using the logstash web interface, you'll
 # need to use this output.
 #
-#   *NOTE*: The elasticsearch client is version 0.19.4. Your elasticsearch
+#   *NOTE*: The elasticsearch client is version 0.19.8. Your elasticsearch
 #   cluster must be running 0.19.x for API compatibility.
 #
 # If you want to set other elasticsearch options that are not exposed directly
@@ -91,10 +91,12 @@ class LogStash::Outputs::ElasticSearch < LogStash::Outputs::Base
         end
       end
 
+      # use unicast discovery
+      @host = "localhost"
+
       # Start elasticsearch local.
       start_local_elasticsearch
     end
-
     require "jruby-elasticsearch"
 
     @logger.info("New ElasticSearch output", :cluster => @cluster,
@@ -183,7 +185,7 @@ class LogStash::Outputs::ElasticSearch < LogStash::Outputs::Base
   def increment_inflight_request_count
     @inflight_mutex.synchronize do
       @inflight_requests += 1
-      @logger.info("ElasticSearch in-flight requests", :count => @inflight_requests)
+      @logger.debug("ElasticSearch in-flight requests", :count => @inflight_requests)
     end
   end # def increment_inflight_request_count
 

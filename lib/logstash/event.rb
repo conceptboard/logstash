@@ -11,26 +11,24 @@ require "time"
 # etc, as necessary.
 class LogStash::Event
   public
-  def initialize(data=Hash.new)
-    if RUBY_ENGINE == "jruby"
-      @@date_parser ||= Java::org.joda.time.format.ISODateTimeFormat.dateTimeParser.withOffsetParsed
-    else
-      # TODO(sissel): LOGSTASH-217
-      @@date_parser ||= nil
-    end
-
+  def initialize(data=nil)
     @cancelled = false
+
     @data = {
       "@source" => "unknown",
-      "@type" => nil,
       "@tags" => [],
       "@fields" => {},
-    }.merge(data)
-
-    if !@data.include?("@timestamp")
-      @data["@timestamp"] = LogStash::Time.now.utc.to_iso8601
-    end
+    }
+    @data.merge!(data) unless data.nil?
+    @data["@timestamp"] ||= LogStash::Time.now
   end # def initialize
+
+  if RUBY_ENGINE == "jruby"
+    @@date_parser = Java::org.joda.time.format.ISODateTimeFormat.dateTimeParser.withOffsetParsed
+  else
+    # TODO(sissel): LOGSTASH-217
+    @@date_parser ||= nil
+  end
 
   public
   def self.from_json(json)
@@ -94,6 +92,14 @@ class LogStash::Event
   end # def source=
 
   public
+  def source_host; @data["@source_host"]; end # def source_host
+  def source_host=(val); @data["@source_host"] = val; end # def source_host=
+
+  public
+  def source_path; @data["@source_path"]; end # def source_path
+  def source_path=(val); @data["@source_path"] = val; end # def source_path=
+
+  public
   def message; @data["@message"]; end # def message
   def message=(val); @data["@message"] = val; end # def message=
 
@@ -145,7 +151,13 @@ class LogStash::Event
   # Append an event to this one.
   public
   def append(event)
-    self.message += "\n" + event.message 
+    if event.message
+      if self.message
+        self.message += "\n" + event.message 
+      else
+        self.message = event.message
+      end
+    end
     self.tags |= event.tags
 
     # Append all fields
@@ -157,7 +169,7 @@ class LogStash::Event
         if value.is_a?(Array)
           self.fields[name] |= value
         else
-          self.fields[name] << value
+          self.fields[name] << value unless self.fields[name].include?(value)
         end
       else
         self.fields[name] = value
@@ -193,6 +205,10 @@ class LogStash::Event
   # is an array (or hash?) should be. Join by comma? Something else?
   public
   def sprintf(format)
+    if format.index("%").nil?
+      return format
+    end
+
     return format.gsub(/%\{[^}]+\}/) do |tok|
       # Take the inside of the %{ ... }
       key = tok[2 ... -1]
@@ -200,31 +216,34 @@ class LogStash::Event
       if key == "+%s"
         # Got %{+%s}, support for unix epoch time
         if RUBY_ENGINE != "jruby"
-          # TODO(sissel): LOGSTASH-217
-          raise Exception.new("LogStash::Event#sprintf('+%s') is not " \
-                              "supported yet in this version of ruby")
+          # This is really slow. See LOGSTASH-217
+          Date.parse(self.timestamp).to_i
+        else
+          datetime = @@date_parser.parseDateTime(self.timestamp)
+          (datetime.getMillis / 1000).to_i
         end
-        datetime = @@date_parser.parseDateTime(self.timestamp)
-        (datetime.getMillis / 1000).to_i
       elsif key == "+%ss"
         # Got %{+%ss}, support for unix epoch time in milliseconds
         if RUBY_ENGINE != "jruby"
           # TODO(sissel): LOGSTASH-217
-          raise Exception.new("LogStash::Event#sprintf('+%s') is not " \
+          raise Exception.new("LogStash::Event#sprintf('+%ss') is not " \
                               "supported yet in this version of ruby")
+        else
+          datetime = @@date_parser.parseDateTime(self.timestamp)
+          (datetime.getMillis.to_f)
         end
-        datetime = @@date_parser.parseDateTime(self.timestamp)
-        (datetime.getMillis.to_f)
       elsif key[0,1] == "+"
         # We got a %{+TIMEFORMAT} so use joda to format it.
         if RUBY_ENGINE != "jruby"
-          # TODO(sissel): LOGSTASH-217
-          raise Exception.new("LogStash::Event#sprintf('+dateformat') is not " \
-                              "supported yet in this version of ruby")
+          # This is really slow. See LOGSTASH-217
+          datetime = Date.parse(self.timestamp)
+          format = key[1 .. -1]
+          datetime.strftime(format)
+        else
+          datetime = @@date_parser.parseDateTime(self.timestamp)
+          format = key[1 .. -1]
+          datetime.toString(format) # return requested time format
         end
-        datetime = @@date_parser.parseDateTime(self.timestamp)
-        format = key[1 .. -1]
-        datetime.toString(format) # return requested time format
       else
         # Use an event field.
         value = nil
@@ -248,11 +267,13 @@ class LogStash::Event
           end # key.split.each
         end # if self[key]
 
-        # TODO(petef): what if value.is_a?(Hash)?
-        if value.nil?
+        case value
+        when nil
           tok # leave the %{foo} if this field does not exist in this event.
-        elsif value.is_a?(Array)
-          value.join(",") # Join by ',' if value is an rray
+        when Array
+          value.join(",") # Join by ',' if value is an array
+        when Hash
+          value.to_json # Convert hashes to json
         else
           value # otherwise return the value
         end

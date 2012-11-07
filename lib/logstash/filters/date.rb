@@ -19,6 +19,7 @@ require "logstash/time"
 # set in the event. For example, with file input, the timestamp is set to the
 # time of reading.
 class LogStash::Filters::Date < LogStash::Filters::Base
+  JavaException = java.lang.Exception if RUBY_ENGINE == "jruby"
 
   config_name "date"
   plugin_status "stable"
@@ -114,9 +115,11 @@ class LogStash::Filters::Date < LogStash::Filters::Base
           joda_parser = org.joda.time.format.ISODateTimeFormat.dateTimeParser.withOffsetParsed
           parser = lambda { |date| joda_parser.parseDateTime(date) }
         when "UNIX" # unix epoch
-          parser = lambda { |date| org.joda.time.Instant.new(date.to_i * 1000).toDateTime }
+          parser = lambda { |date| org.joda.time.Instant.new((date.to_f * 1000).to_i).toDateTime }
         when "UNIX_MS" # unix epoch in ms
           parser = lambda { |date| org.joda.time.Instant.new(date.to_i).toDateTime }
+        when "TAI64N" # TAI64 with nanoseconds, -10000 accounts for leap seconds
+          parser = lambda { |date| org.joda.time.Instant.new((date[1..15].hex * 1000 - 10000)+(date[16..23].hex/1000000)).toDateTime }
         else
           joda_parser = org.joda.time.format.DateTimeFormat.forPattern(format).withOffsetParsed
           if(locale != nil) 
@@ -173,7 +176,7 @@ class LogStash::Filters::Date < LogStash::Filters::Base
               time = parser.call(value)
               success = true
               break # success
-            rescue => e
+            rescue StandardError, JavaException => e
               last_exception = e
             end
           end # fieldparsers.each

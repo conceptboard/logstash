@@ -40,16 +40,6 @@ class LogStash::Inputs::Base < LogStash::Plugin
   # This can help with processing later.
   config :tags, :validate => :array
 
-  #config :tags, :validate => (lambda do |value|
-    #re = /^[A-Za-z0-9_]+$/
-    #value.each do |v|
-      #if v !~ re
-        #return [false, "Tag '#{v}' does not match #{re}"]
-      #end # check 'v'
-    #end # value.each
-    #return true
-  #end) # config :tag
-
   # Add a field to an event
   config :add_field, :validate => :hash, :default => {}
 
@@ -79,7 +69,6 @@ class LogStash::Inputs::Base < LogStash::Plugin
     @format ||= "plain"
 
     event = LogStash::Event.new
-    event.type = @type
     event.tags = @tags.clone rescue []
     event.source = source
 
@@ -90,35 +79,43 @@ class LogStash::Inputs::Base < LogStash::Plugin
       begin
         fields = JSON.parse(raw)
         fields.each { |k, v| event[k] = v }
+        if @message_format
+          event.message = event.sprintf(@message_format)
+        else
+          event.message = raw
+        end
       rescue => e
         ## TODO(sissel): Instead of dropping the event, should we treat it as
         ## plain text and try to do the best we can with it?
-        @logger.warn("Trouble parsing json input", :input => raw,
+        @logger.warn("Trouble parsing json input, falling back to plain text", :input => raw,
                      :source => source, :exception => e,
                      :backtrace => e.backtrace)
-        return nil
-      end
-
-      if @message_format
-        event.message = event.sprintf(@message_format)
-      else
         event.message = raw
       end
     when "json_event"
       begin
         event = LogStash::Event.from_json(raw)
-        event.type ||= @type
+        event.tags += @tags
+        if @message_format
+          event.message ||= event.sprintf(@message_format)
+        end
       rescue => e
         ## TODO(sissel): Instead of dropping the event, should we treat it as
         ## plain text and try to do the best we can with it?
-        @logger.warn("Trouble parsing json input", :input => raw,
-                     :source => source, :exception => e,
+        @logger.warn("Trouble parsing json input, falling back to plain text",
+                     :input => raw, :source => source, :exception => e,
                      :backtrace => e.backtrace)
-        return nil
+        event.message = raw
+      end
+
+      if event.source == "unknown"
+        event.source = source
       end
     else
       raise "unknown event format #{@format}, this should never happen"
     end
+
+    event.type ||= @type
 
     @add_field.each do |field, value|
        event[field] ||= []

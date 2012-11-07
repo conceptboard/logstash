@@ -1,11 +1,12 @@
 require "logstash/inputs/base"
+require "logstash/inputs/threadable"
 require "logstash/namespace"
 
 # Read events from a redis. Supports both redis channels and also redis lists
 # (using BLPOP)
 #
 # For more information about redis, see <http://redis.io/>
-class LogStash::Inputs::Redis < LogStash::Inputs::Base
+class LogStash::Inputs::Redis < LogStash::Inputs::Threadable
 
   config_name "redis"
   plugin_status "beta"
@@ -92,7 +93,7 @@ class LogStash::Inputs::Redis < LogStash::Inputs::Base
       :port => @port,
       :timeout => @timeout,
       :db => @db,
-      :password => @password
+      :password => @password.nil? ? nil : @password.value
     )
   end # def connect
 
@@ -102,7 +103,7 @@ class LogStash::Inputs::Redis < LogStash::Inputs::Base
       event = to_event msg, identity
       output_queue << event if event
     rescue => e # parse or event creation error
-      @logger.error("Failed to create event", :message => msg, exception => e,
+      @logger.error("Failed to create event", :message => msg, :exception => e,
                     :backtrace => e.backtrace);
     end
   end
@@ -151,7 +152,7 @@ class LogStash::Inputs::Redis < LogStash::Inputs::Base
   # loop.
   private
   def listener_loop(listener, output_queue)
-    loop do
+    while !finished?
       begin
         @redis ||= connect
         self.send listener, @redis, output_queue
@@ -160,7 +161,7 @@ class LogStash::Inputs::Redis < LogStash::Inputs::Base
                      :exception => e, :backtrace => e.backtrace)
         raise e
       end
-    end # loop
+    end # while !finished?
   end # listener_loop
 
   public

@@ -1,12 +1,9 @@
 require "logstash/config/file"
-require "logstash/filters"
 require "logstash/filterworker"
-require "logstash/inputs"
 require "logstash/logging"
 require "logstash/sized_queue"
 require "logstash/multiqueue"
 require "logstash/namespace"
-require "logstash/outputs"
 require "logstash/program"
 require "logstash/threadwatchdog"
 require "logstash/util"
@@ -42,6 +39,7 @@ class LogStash::Agent
     # flag/config defaults
     @verbose = 0
     @filterworker_count = 1
+    @watchdog_timeout = 10
 
     @plugins = {}
     @plugins_mutex = Mutex.new
@@ -92,6 +90,10 @@ class LogStash::Agent
         raise ArgumentError, "filter worker count must be > 0"
       end
     end # -w
+
+    opts.on("--watchdog-timeout TIMEOUT", "Set watchdog timeout value") do |arg|
+      @watchdog_timeout = arg.to_f
+    end # --watchdog-timeout
 
     opts.on("-l", "--log FILE", "Log to a given path. Default is stdout.") do |path|
       @logfile = path
@@ -221,10 +223,11 @@ class LogStash::Agent
       STDERR.reopen(logfile)
     end
 
-    if @verbose >= 3  # Uber debugging.
-      @logger.level = :debug
+    if ENV.include?("RUBY_DEBUG")
       $DEBUG = true
-    elsif @verbose == 2 # logstash debug logs
+    end
+
+    if @verbose >= 2 # logstash debug logs
       @logger.level = :debug
     elsif @verbose == 1 # logstash info logs
       @logger.level = :info
@@ -244,7 +247,7 @@ class LogStash::Agent
       else
         # Get a list of files matching a glob. If the user specified a single
         # file, then this will only have one match and we are still happy.
-        paths = Dir.glob(@config_path)
+        paths = Dir.glob(@config_path).sort
       end
 
       concatconfig = []
@@ -394,7 +397,7 @@ class LogStash::Agent
       end
 
       # NOTE(petef) we should have config params for queue size
-      @filter_queue = LogStash::SizedQueue.new(10)
+      @filter_queue = LogStash::SizedQueue.new(10 * @filterworker_count)
       @filter_queue.logger = @logger
       @output_queue = LogStash::MultiQueue.new
       @output_queue.logger = @logger
@@ -413,7 +416,6 @@ class LogStash::Agent
           filter.logger = @logger
           @plugin_setup_mutex.synchronize do
             filter.register
-            filter.prepare_metrics
           end
         end
 
@@ -441,7 +443,8 @@ class LogStash::Agent
       end # if @filters.length > 0
 
       # A thread to supervise filter workers
-      watchdog = LogStash::ThreadWatchdog.new(@filterworkers.values)
+      watchdog = LogStash::ThreadWatchdog.new(@filterworkers.values,
+                                              @watchdog_timeout)
       watchdog.logger = logger
       Thread.new do
         watchdog.watch
@@ -465,20 +468,11 @@ class LogStash::Agent
     # like tests, etc.
     yield if block_given?
 
-    Thread.new do
-      while true
-        @logger.info("metrics dump")
-        @logger.metrics.each do |identifier, metric|
-          @logger.info("metric #{identifier}", metric.to_hash)
-        end
-        sleep 5
-      end
-    end
-
     while sleep(2)
       if @plugins.values.count { |p| p.alive? } == 0
         @logger.warn("no plugins running, shutting down")
         shutdown
+        break
       end
       @logger.debug("heartbeat")
     end
@@ -497,7 +491,18 @@ class LogStash::Agent
     shutdown_plugins(@plugins)
     # When we get here, all inputs have finished, all messages are done
     @logger.info("Shutdown complete")
-    exit(0)
+
+    # The 'unless $TESTING' is a hack for now to work around the test suite
+    # needing the pipeline to finish cleanly. We should just *not* exit here,
+    # but many plugins don't shutdown correctly. Fixing that shutdown problem
+    # will require a new pipeline design that has shutdown contracts built-in
+    # to the plugin<->agent protocol.
+    #
+    # For now, to make SIGINT/SIGTERM actually shutdown, exit. Unless we are
+    # testing, in which case wait properly for shutdown. Shitty solution, but
+    # whatever. We'll hopefully have a new pipeline/plugin protocol design
+    # shortly (by November 2012?) that will resolve this hack.
+    exit(0) unless $TESTING
   end # def shutdown
 
   def shutdown_plugins(plugins)
