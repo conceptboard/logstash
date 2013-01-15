@@ -157,7 +157,7 @@ module LogStash::Config::Mixin
     end # def inherited
 
     def validate(params)
-      @plugin_name = [ancestors[1].config_name, config_name].join("/")
+      @plugin_name = [superclass.config_name, config_name].join("/")
       @logger = LogStash::Logger.new(STDOUT)
       is_valid = true
 
@@ -172,6 +172,8 @@ module LogStash::Config::Mixin
     def validate_plugin_status
       docmsg = "For more information about plugin statuses, see http://logstash.net/docs/#{LOGSTASH_VERSION}/plugin-status "
       case @plugin_status
+      when "unsupported"
+        @logger.warn("Using unsupported plugin '#{@config_name}'. This plugin isn't well supported by the community and likely has no maintainer. #{docmsg}")
       when "experimental"
         @logger.warn("Using experimental plugin '#{@config_name}'. This plugin is untested and may change in the future. #{docmsg}")
       when "beta"
@@ -300,23 +302,29 @@ module LogStash::Config::Mixin
       elsif validator.is_a?(Symbol)
         # TODO(sissel): Factor this out into a coersion method?
         # TODO(sissel): Document this stuff.
+        value = hash_or_array(value)
+
         case validator
           when :hash
-            if value.size % 2 == 1
-              return false, "This field must contain an even number of items, got #{value.size}"
-            end
+            if value.is_a?(Hash)
+              result = value
+            else
+              if value.size % 2 == 1
+                return false, "This field must contain an even number of items, got #{value.size}"
+              end
 
-            # Convert the array the config parser produces into a hash.
-            result = {}
-            value.each_slice(2) do |key, value|
-              entry = result[key]
-              if entry.nil?
-                result[key] = value
-              else
-                if entry.is_a?(Array)
-                  entry << value
+              # Convert the array the config parser produces into a hash.
+              result = {}
+              value.each_slice(2) do |key, value|
+                entry = result[key]
+                if entry.nil?
+                  result[key] = value
                 else
-                  result[key] = [entry, value]
+                  if entry.is_a?(Array)
+                    entry << value
+                  else
+                    result[key] = [entry, value]
+                  end
                 end
               end
             end
@@ -340,11 +348,18 @@ module LogStash::Config::Mixin
               return false, "Expected boolean, got #{value.inspect}"
             end
 
-            if value.first !~ /^(true|false)$/
-              return false, "Expected boolean 'true' or 'false', got #{value.first.inspect}"
-            end
+            bool_value = value.first
+            if !!bool_value == bool_value
+              # is_a does not work for booleans
+              # we have Boolean and not a string
+              result = bool_value
+            else
+              if bool_value !~ /^(true|false)$/
+                return false, "Expected boolean 'true' or 'false', got #{bool_value.inspect}"
+              end
 
-            result = (value.first == "true")
+              result = (bool_value == "true")
+            end
           when :ipaddr
             if value.size > 1 # only one value wanted
               return false, "Expected IPaddr, got #{value.inspect}"
@@ -374,5 +389,12 @@ module LogStash::Config::Mixin
       # Return the validator for later use, like with type coercion.
       return true, result
     end # def validate_value
+
+    def hash_or_array(value)
+      if !value.is_a?(Hash)
+        value = [*value] # coerce scalar to array if necessary
+      end
+      return value
+    end
   end # module LogStash::Config::DSL
 end # module LogStash::Config

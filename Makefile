@@ -3,23 +3,21 @@
 #   cpio
 #   wget or curl
 #
-JRUBY_VERSION=1.7.0
-ELASTICSEARCH_VERSION=0.19.10
-JODA_VERSION=2.1
+JRUBY_VERSION=1.7.1
+ELASTICSEARCH_VERSION=0.20.2
 #VERSION=$(shell ruby -r./lib/logstash/version -e 'puts LOGSTASH_VERSION')
-VERSION=$(shell awk -F\" '/LOGSTASH_VERSION/ {print $$2}' lib/logstash/version.rb )
+VERSION=$(shell awk -F\" '/LOGSTASH_VERSION/ {print $$2}' lib/logstash/version.rb)
 
 WITH_JRUBY=java -jar $(shell pwd)/$(JRUBY) -S
 JRUBY=vendor/jar/jruby-complete-$(JRUBY_VERSION).jar
 JRUBY_URL=http://repository.codehaus.org/org/jruby/jruby-complete/$(JRUBY_VERSION)
 JRUBY_CMD=java -jar $(JRUBY)
 JRUBYC=$(WITH_JRUBY) jrubyc
-ELASTICSEARCH_URL=http://github.com/downloads/elasticsearch/elasticsearch
+ELASTICSEARCH_URL=http://download.elasticsearch.org/elasticsearch/elasticsearch
 ELASTICSEARCH=vendor/jar/elasticsearch-$(ELASTICSEARCH_VERSION)
-JODA=vendor/jar/joda-time-$(JODA_VERSION)/joda-time-$(JODA_VERSION).jar
-GEOIP=vendor/geoip/GeoCityLite.dat
-GEOIP_URL=http://geolite.maxmind.com/download/geoip/database/GeoLiteCity.dat.gz
-PLUGIN_FILES=$(shell git ls-files | egrep '^lib/logstash/(inputs|outputs|filters)/' | egrep -v '/(base|threadable).rb$$|/inputs/ganglia/')
+GEOIP=vendor/geoip/GeoLiteCity.dat
+GEOIP_URL=http://logstash.objects.dreamhost.com/maxmind/GeoLiteCity-2012-11-09.dat.gz
+PLUGIN_FILES=$(shell git ls-files | egrep '^lib/logstash/(inputs|outputs|filters)/[^/]+$$' | egrep -v '/(base|threadable).rb$$|/inputs/ganglia/')
 QUIET=@
 
 WGET=$(shell which wget 2>/dev/null)
@@ -33,6 +31,7 @@ TAR_OPTS=
 #TAR_OPTS=--wildcards
 #endif
 
+TESTS=$(wildcard spec/support/*.rb spec/filters/*.rb spec/examples/*.rb spec/event.rb)
 default: jar
 
 # Figure out if we're using wget or curl
@@ -95,7 +94,7 @@ $(JRUBY): | vendor/jar
 vendor/jar/elasticsearch-$(ELASTICSEARCH_VERSION).tar.gz: | wget-or-curl vendor/jar
 	@echo "=> Fetching elasticsearch"
 	$(QUIET)$(DOWNLOAD_COMMAND) $@ $(ELASTICSEARCH_URL)/elasticsearch-$(ELASTICSEARCH_VERSION).tar.gz
-		
+
 vendor/jar/graphtastic-rmiclient.jar: | wget-or-curl vendor/jar
 	@echo "=> Fetching graphtastic rmi client jar"
 	$(QUIET)$(DOWNLOAD_COMMAND) $@ http://cloud.github.com/downloads/NickPadilla/GraphTastic/graphtastic-rmiclient.jar
@@ -107,18 +106,11 @@ $(ELASTICSEARCH): $(ELASTICSEARCH).tar.gz | vendor/jar
 	$(QUIET)tar -C $(shell dirname $@) -xf $< $(TAR_OPTS) --exclude '*sigar*' \
 		'elasticsearch-$(ELASTICSEARCH_VERSION)/lib/*.jar'
 
-vendor/jar/joda-time-$(JODA_VERSION)-dist.tar.gz: | wget-or-curl vendor/jar
-	$(DOWNLOAD_COMMAND) $@ "http://downloads.sourceforge.net/project/joda-time/joda-time/$(JODA_VERSION)/joda-time-$(JODA_VERSION)-dist.tar.gz"
-
-vendor/jar/joda-time-$(JODA_VERSION)/joda-time-$(JODA_VERSION).jar: vendor/jar/joda-time-$(JODA_VERSION)-dist.tar.gz | vendor/jar
-	tar -C vendor/jar -zxf $< joda-time-$(JODA_VERSION)/joda-time-$(JODA_VERSION).jar
-
 vendor/geoip: | vendor
 	$(QUIET)mkdir $@
 
 $(GEOIP): | vendor/geoip
-	$(QUIET)wget -q -O - http://geolite.maxmind.com/download/geoip/database/GeoLiteCity.dat.gz \
-		| gzip -dc - > $@
+	$(QUIET)wget -q -O - $(GEOIP_URL) | gzip -dc - > $@
 
 # Always run vendor/bundle
 .PHONY: fix-bundler
@@ -129,10 +121,12 @@ fix-bundler:
 vendor-gems: | vendor/bundle
 
 .PHONY: vendor/bundle
-vendor/bundle: | vendor
+vendor/bundle: | vendor $(JRUBY)
 	@echo "=> Installing gems to $@..."
 	#$(QUIET)GEM_HOME=$(GEM_HOME) $(JRUBY_CMD) --1.9 $(GEM_HOME)/bin/bundle install --deployment
-	$(QUIET)GEM_HOME=./vendor/bundle/jruby/1.9/ GEM_PATH= $(JRUBY_CMD) --1.9 ./gembag.rb logstash.gemspec 
+	$(QUIET)GEM_HOME=./vendor/bundle/jruby/1.9/ GEM_PATH= $(JRUBY_CMD) --1.9 ./gembag.rb logstash.gemspec
+	@# Purge old version of json
+	#$(QUIET)GEM_HOME=./vendor/bundle/jruby/1.9/ GEM_PATH= $(JRUBY_CMD) --1.9 -S gem uninstall json -v 1.6.5
 	@# Purge any junk that fattens our jar without need!
 	@# The riak gem includes previous gems in the 'pkg' dir. :(
 	-rm -rf $@/jruby/1.9/gems/riak-client-1.0.3/pkg
@@ -152,7 +146,7 @@ build/ruby: | build
 # TODO(sissel): Skip sigar?
 # Run this one always? Hmm..
 .PHONY: build/monolith
-build/monolith: $(ELASTICSEARCH) $(JRUBY) $(JODA) $(GEOIP) vendor-gems | build
+build/monolith: $(ELASTICSEARCH) $(JRUBY) $(GEOIP) vendor-gems | build
 build/monolith: compile copy-ruby-files vendor/jar/graphtastic-rmiclient.jar
 	-$(QUIET)mkdir -p $@
 	@# Unpack all the 3rdparty jars and any jars in gems
@@ -164,10 +158,6 @@ build/monolith: compile copy-ruby-files vendor/jar/graphtastic-rmiclient.jar
 	$(QUIET)cp -r $$PWD/vendor/bundle/jruby/1.9/gems/jruby-openss*/lib/shared/openssl/* $@/openssl
 	$(QUIET)cp -r $$PWD/vendor/bundle/jruby/1.9/gems/jruby-openss*/lib/shared/jopenssl/* $@/jopenssl
 	$(QUIET)cp -r $$PWD/vendor/bundle/jruby/1.9/gems/jruby-openss*/lib/shared/openssl.rb $@/openssl.rb
-	@# Make sure joda-time gets unpacked last, so it overwrites the joda jruby
-	@# ships with.
-	$(QUIET)find $$PWD/vendor/jar/joda-time-$(JODA_VERSION) -name '*.jar' \
-	| (cd $@; xargs -tn1 jar xf)
 	@# Purge any extra files we don't need in META-INF (like manifests and
 	@# signature files)
 	-$(QUIET)rm -f $@/META-INF/*.LIST
@@ -194,6 +184,40 @@ build/logstash-$(VERSION)-monolithic.jar: JAR_ARGS+=patterns
 build/logstash-$(VERSION)-monolithic.jar:
 	$(QUIET)rm -f $@
 	$(QUIET)jar cfe $@ logstash.runner $(JAR_ARGS)
+	$(QUIET)jar i $@
+	@echo "Created $@"
+
+build/flatgems: | build vendor/bundle
+	mkdir $@
+	for i in $(VENDOR_DIR)/gems/*/lib; do \
+		rsync -av $$i/ $@/lib ; \
+	done
+
+flatjar-test:
+	GEM_HOME= GEM_PATH= java -jar build/logstash-$(VERSION)-flatjar.jar rspec $(TESTS)
+	cd build && GEM_HOME= GEM_PATH= java -jar logstash-$(VERSION)-flatjar.jar rspec spec/jar.rb
+
+jar-test:
+	GEM_HOME= GEM_PATH= java -jar build/logstash-$(VERSION)-monolithic.jar rspec $(TESTS)
+	cd build && GEM_HOME= GEM_PATH= java -jar logstash-$(VERSION)-monolithic.jar rspec spec/jar.rb
+
+flatjar-test-and-report:
+	GEM_HOME= GEM_PATH= java -jar build/logstash-$(VERSION)-flatjar.jar rspec $(TESTS) --format h --out build/results.flatjar.html
+
+jar-test-and-report:
+	GEM_HOME= GEM_PATH= java -jar build/logstash-$(VERSION)-monolithic.jar rspec $(TESTS) --format h --out build/results.monolithic.html
+
+flatjar: build/logstash-$(VERSION)-flatjar.jar
+build/jar: | build build/flatgems build/monolith
+	$(QUIET)mkdir build/jar
+	$(QUIET)rsync -av --delete build/flatgems/lib/ build/monolith/ build/ruby/ patterns build/jar/
+	$(QUIET)(cd lib; rsync -av --delete logstash/web/public ../build/jar/logstash/web/public)
+	$(QUIET)(cd lib; rsync -av --delete logstash/web/views ../build/jar/logstash/web/views)
+	$(QUIET)(cd lib; rsync -av --delete logstash/certs ../build/jar/logstash/certs)
+
+build/logstash-$(VERSION)-flatjar.jar: | build/jar
+	$(QUIET)rm -f $@
+	$(QUIET)jar cfe $@ logstash.runner -C build/jar .
 	$(QUIET)jar i $@
 	@echo "Created $@"
 

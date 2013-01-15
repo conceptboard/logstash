@@ -26,6 +26,15 @@ class LogStash::Inputs::Base < LogStash::Plugin
   # The format of input data (plain, json, json_event)
   config :format, :validate => ["plain", "json", "json_event"]
 
+  # The character encoding used in this input. Examples include "UTF-8"
+  # and "cp1252"
+  #
+  # This setting is useful if your log files are in Latin-1 (aka cp1252)
+  # or in another character set other than UTF-8.
+  #
+  # This only affects "plain" format logs since json is UTF-8 already.
+  config :charset, :validate => ::Encoding.name_list, :default => "UTF-8"
+
   # If format is "json", an event sprintf string to build what
   # the display @message should be given (defaults to the raw JSON).
   # sprintf format strings look like %{fieldname} or %{@metadata}.
@@ -74,10 +83,17 @@ class LogStash::Inputs::Base < LogStash::Plugin
 
     case @format
     when "plain"
+      raw.force_encoding(@charset)
+      if @charset != "UTF-8"
+        # Convert to UTF-8 if not in that character set.
+        raw = raw.encode("UTF-8", :invalid => :replace, :undef => :replace)
+      end
       event.message = raw
     when "json"
       begin
-        fields = JSON.parse(raw)
+        # JSON must be valid UTF-8, and many inputs come from ruby IO
+        # instances, which almost all default to ASCII-8BIT. Force UTF-8
+        fields = JSON.parse(raw.force_encoding("UTF-8"))
         fields.each { |k, v| event[k] = v }
         if @message_format
           event.message = event.sprintf(@message_format)
@@ -91,10 +107,13 @@ class LogStash::Inputs::Base < LogStash::Plugin
                      :source => source, :exception => e,
                      :backtrace => e.backtrace)
         event.message = raw
+        event.tags << "_jsonparsefailure"
       end
     when "json_event"
       begin
-        event = LogStash::Event.from_json(raw)
+        # JSON must be valid UTF-8, and many inputs come from ruby IO
+        # instances, which almost all default to ASCII-8BIT. Force UTF-8
+        event = LogStash::Event.from_json(raw.force_encoding("UTF-8"))
         event.tags += @tags
         if @message_format
           event.message ||= event.sprintf(@message_format)
@@ -106,6 +125,7 @@ class LogStash::Inputs::Base < LogStash::Plugin
                      :input => raw, :source => source, :exception => e,
                      :backtrace => e.backtrace)
         event.message = raw
+        event.tags << "_jsonparsefailure"
       end
 
       if event.source == "unknown"
@@ -123,7 +143,7 @@ class LogStash::Inputs::Base < LogStash::Plugin
        event[field] << event.sprintf(value)
     end
 
-    logger.debug(["Received new event", {:source => source, :event => event}])
+    @logger.debug? and @logger.debug("Received new event", :source => source, :event => event)
     return event
   end # def to_event
 end # class LogStash::Inputs::Base

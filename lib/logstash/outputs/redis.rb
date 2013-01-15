@@ -25,7 +25,7 @@ class LogStash::Outputs::Redis < LogStash::Outputs::Base
   config :host, :validate => :array, :default => ["127.0.0.1"]
 
   # Shuffle the host list during logstash startup.
-  config :shuffle_hosts, :validate => :boolean, :default => false
+  config :shuffle_hosts, :validate => :boolean, :default => true
 
   # The default port to connect on. Can be overridden on any hostname.
   config :port, :validate => :number, :default => 6379
@@ -155,12 +155,14 @@ class LogStash::Outputs::Redis < LogStash::Outputs::Base
       return
     end
 
+    event_key_and_payload = [event.sprintf(@key), event.to_json]
+
     begin
       @redis ||= connect
       if @data_type == 'list'
-        @redis.rpush event.sprintf(@key), event.to_json
+        @redis.rpush *event_key_and_payload
       else
-        @redis.publish event.sprintf(@key), event.to_json
+        @redis.publish *event_key_and_payload
       end
     rescue => e
       @logger.warn("Failed to send event to redis", :event => event,

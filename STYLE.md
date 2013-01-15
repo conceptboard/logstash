@@ -18,13 +18,15 @@ Do this:
 
 ## Code Style
 
+* comment everything you can think of.
 * indentation: 2 spaces
 * between methods: 1 line
 * sort your requires
-* long lines should wrap at 80 characters. If you wrap at an operator (or, +,
-  etc) start the next line with that operator.
+* long lines should wrap at 80 characters. If you wrap at an operator ('or',
+  '+', etc) start the next line with that operator.
 * parentheses on function definitions/calls
 * explicit is better than implicit
+  * implicit returns are forbidden except in the case of a single expression 
 
 The point is consistency and documentation. If you see inconsistencies, let me
 know, and I'll fix them :)
@@ -55,6 +57,7 @@ Short example:
           some_really_long_function_call_blah_blah_blah(arg1,
               arg2, arg3, arg4)
 
+          # indent the 'when' inside a 'case'.
           case foo
             when "bar"
               puts "Hello world"
@@ -69,14 +72,25 @@ Short example:
 
 ## Specific cases
 
-### Hash synatx
+### Hash Syntax
 
-Use of the "hash colon" syntax (ruby 1.9) is not accepted: { foo: "bar" }
+Use of the "hash colon" syntax (ruby 1.9) is not accepted.
+
+    # This is NOT good.
+    { foo: "bar" }
+
+    # This is good.
+    { :foo => "bar" }
 
 ### String#[]
 
-String#[] with one numeric argument must not be used due to bugs between ruby
-versions.
+String#[] with one numeric argument must not be used due to bugs and
+inconsistencies between ruby versions.
 
-* Do not use this: "foo"[0]
-* Use this: "foo"[0,1]
+    str = "foo"
+
+    # This is NOT good
+    str[0]
+
+    # This is good.
+    str[0, 1]

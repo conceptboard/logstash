@@ -134,16 +134,97 @@ describe LogStash::Filters::Date do
   end
 
   describe "failed parses should not cause a failure (LOGSTASH-641)" do
-    config <<-CONFIG
+    config <<-'CONFIG'
+      input {
+        generator {
+          lines => [
+            '{ "@fields": { "mydate": "this will not parse" } }',
+            '{ "@fields": { } }'
+          ]
+          format => json_event
+          type => foo
+          count => 1
+        }
+      }
       filter {
         date {
           mydate => [ "MMM  d HH:mm:ss", "MMM dd HH:mm:ss" ]
         }
       }
+      output { 
+        null { }
+      }
     CONFIG
 
-    sample "@fields" => { "mydate" => "Jun 12 11:22:33" } do
+    agent do
       # nothing to do, if this crashes it's an error..
+    end
+  end
+
+  describe "TAI64N support" do
+    config <<-'CONFIG'
+      filter {
+        date {
+          t => TAI64N
+        }
+      }
+    CONFIG
+
+    # Try without leading "@"
+    sample({ "@fields" => { "t" => "4000000050d506482dbdf024" } }) do
+      insist { subject.timestamp } == "2012-12-22T01:00:46.767Z"
+    end
+
+    # Should still parse successfully if it's a full tai64n time (with leading
+    # '@')
+    sample({ "@fields" => { "t" => "@4000000050d506482dbdf024" } }) do
+      insist { subject.timestamp } == "2012-12-22T01:00:46.767Z"
+    end
+  end
+
+  describe "accept match config option with hash value (LOGSTASH-735)" do
+    config <<-CONFIG
+      filter {
+        date {
+          match => [ "mydate", "ISO8601" ]
+        }
+      }
+    CONFIG
+
+    time = "2001-09-09T01:46:40.000Z"
+
+    sample({"@fields" => {"mydate" => time}}) do
+      insist { subject["mydate"] } == time
+      insist { subject.timestamp } == time
+      insist { subject["@timestamp"] } == time
+    end
+  end
+  
+  describe "support deep field access" do
+    config <<-CONFIG
+      filter { 
+        date {
+          match => [ "data.deep", "ISO8601" ]
+        }
+      }
+    CONFIG
+    
+    sample({ "@fields" => { "data" => { "deep" => "2013-01-01T00:00:00.000Z" } } }) do
+      insist { subject["@timestamp"] } == "2013-01-01T00:00:00.000Z"
+    end
+  end
+
+  describe "support deep field access" do
+    config <<-CONFIG
+      filter { 
+        date {
+          match => [ "data\\.deep", "ISO8601" ]
+        }
+      }
+    CONFIG
+
+    sample({ "@fields" => { "data.deep" => "2013-01-01T00:00:00.000Z" } }) do
+      insist { subject["@timestamp"] } == "2013-01-01T00:00:00.000Z"
     end
   end
 end
